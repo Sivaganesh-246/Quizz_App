@@ -44,6 +44,9 @@ const Home = () => {
           <Link to="/leaderboard" className="btn btn-outline btn-lg">
             🏆 View Leaderboard
           </Link>
+          <Link to="/login" className="btn btn-outline btn-lg">
+            👤 Student / Teacher Login
+          </Link>
         </div>
 
         <div className="stats-strip">

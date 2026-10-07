@@ -1,123 +1,175 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { categories, quizQuestions } from '../data/questions';
+import { createQuizAttempt, getCustomQuiz } from '../lib/supabase';
 import QuizCard from '../components/QuizCard';
 import Timer from '../components/Timer';
 
 const Quiz = () => {
-  const { categoryId } = useParams();
+  const { categoryId, quizId } = useParams();
   const navigate = useNavigate();
-
-  // Find category metadata
-  const currentCategory = categories.find((c) => c.id === categoryId) || categories[0];
-  const questions = quizQuestions[categoryId] || quizQuestions.java;
-
-  const totalTimeSeconds = (currentCategory?.timeInMinutes || 3) * 60;
-
-  // States
+  const isDatabaseQuiz = Boolean(quizId);
+  const initialCategory = categories.find((category) => category.id === categoryId) || categories[0];
+  const [customQuiz, setCustomQuiz] = useState(null);
+  const [customQuizError, setCustomQuizError] = useState('');
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [userAnswers, setUserAnswers] = useState({}); // { [questionIndex]: optionIndex }
-  const [timeLeft, setTimeLeft] = useState(totalTimeSeconds);
+  const [userAnswers, setUserAnswers] = useState({});
+  const [timeLeft, setTimeLeft] = useState(initialCategory.timeInMinutes * 60);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState('');
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-
-  // Keep ref for auto-submit
+  const submittingRef = useRef(false);
   const answersRef = useRef(userAnswers);
-  answersRef.current = userAnswers;
-
   const timeLeftRef = useRef(timeLeft);
+  answersRef.current = userAnswers;
   timeLeftRef.current = timeLeft;
 
-  // Submit Handler
-  const handleSubmitQuiz = useCallback(() => {
-    if (isSubmitting) return;
-    setIsSubmitting(true);
-
-    const timeSpent = totalTimeSeconds - timeLeftRef.current;
-
-    navigate('/result', {
-      state: {
-        categoryId: currentCategory.id,
-        categoryName: currentCategory.name,
-        categoryIcon: currentCategory.icon,
-        questions: questions,
-        userAnswers: answersRef.current,
-        timeSpent: Math.max(1, timeSpent),
-        totalTime: totalTimeSeconds
-      }
-    });
-  }, [currentCategory, isSubmitting, navigate, questions, totalTimeSeconds]);
-
-  // Timer Effect
   useEffect(() => {
+    if (!isDatabaseQuiz) return undefined;
+    let isActive = true;
+    getCustomQuiz(quizId)
+      .then((quiz) => {
+        if (!isActive) return;
+        if (!quiz) {
+          setCustomQuizError('This quiz could not be found in Supabase.');
+          return;
+        }
+        setCustomQuiz(quiz);
+        setTimeLeft(quiz.duration_minutes * 60);
+      })
+      .catch((error) => {
+        if (isActive) setCustomQuizError(error.message);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [isDatabaseQuiz, quizId]);
+
+  const currentCategory = isDatabaseQuiz
+    ? {
+      id: customQuiz?.id || quizId,
+      name: customQuiz?.title || 'Custom Quiz',
+      icon: customQuiz?.icon || '📝',
+      timeInMinutes: customQuiz?.duration_minutes || 3
+    }
+    : categories.find((category) => category.id === categoryId) || categories[0];
+  const questions = isDatabaseQuiz
+    ? (customQuiz?.questions || [])
+    : (quizQuestions[categoryId] || quizQuestions.java);
+  const totalTimeSeconds = (currentCategory.timeInMinutes || 3) * 60;
+  const isReady = !isDatabaseQuiz || Boolean(customQuiz);
+
+  const handleSubmitQuiz = useCallback(async () => {
+    if (!isReady || submittingRef.current) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    setSubmissionError('');
+
+    const answers = answersRef.current;
+    const correctCount = questions.reduce((count, question, index) => (
+      count + (answers[index] === question.correctAnswer ? 1 : 0)
+    ), 0);
+    const timeSpent = Math.max(0, totalTimeSeconds - timeLeftRef.current);
+
+    try {
+      const attempt = await createQuizAttempt({
+        quiz_id: isDatabaseQuiz ? customQuiz.id : null,
+        category_id: isDatabaseQuiz ? (customQuiz.category_id || `custom-${customQuiz.id}`) : currentCategory.id,
+        category_name: currentCategory.name,
+        category_icon: currentCategory.icon,
+        score: correctCount,
+        total_questions: questions.length,
+        percentage: Math.round((correctCount / questions.length) * 100),
+        time_spent_seconds: timeSpent,
+        answers
+      });
+
+      navigate('/result', {
+        state: {
+          categoryId: isDatabaseQuiz ? (customQuiz.category_id || customQuiz.id) : currentCategory.id,
+          quizId: isDatabaseQuiz ? customQuiz.id : null,
+          attemptId: attempt.id,
+          categoryName: currentCategory.name,
+          categoryIcon: currentCategory.icon,
+          questions,
+          userAnswers: answers,
+          timeSpent,
+          totalTime: totalTimeSeconds
+        }
+      });
+    } catch (error) {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      setSubmissionError(`Could not save your answers to Supabase: ${error.message}`);
+    }
+  }, [
+    currentCategory.id,
+    currentCategory.name,
+    currentCategory.icon,
+    customQuiz,
+    isDatabaseQuiz,
+    isReady,
+    navigate,
+    questions,
+    totalTimeSeconds
+  ]);
+
+  useEffect(() => {
+    if (!isReady || questions.length === 0 || isSubmitting) return undefined;
     const timerInterval = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
+      setTimeLeft((previous) => {
+        if (previous <= 1) {
           clearInterval(timerInterval);
           handleSubmitQuiz();
           return 0;
         }
-        return prev - 1;
+        return previous - 1;
       });
     }, 1000);
 
     return () => clearInterval(timerInterval);
-  }, [handleSubmitQuiz]);
+  }, [handleSubmitQuiz, isReady, isSubmitting, questions.length]);
 
-  // Option selection
   const handleSelectOption = (optionIndex) => {
-    setUserAnswers((prev) => ({
-      ...prev,
-      [currentIndex]: optionIndex
-    }));
-  };
-
-  const handleNext = () => {
-    if (currentIndex < questions.length - 1) {
-      setCurrentIndex((prev) => prev + 1);
-    }
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex((prev) => prev - 1);
-    }
+    setUserAnswers((previous) => ({ ...previous, [currentIndex]: optionIndex }));
   };
 
   const handleClearAnswer = () => {
-    setUserAnswers((prev) => {
-      const updated = { ...prev };
+    setUserAnswers((previous) => {
+      const updated = { ...previous };
       delete updated[currentIndex];
       return updated;
     });
   };
 
-  // Progress metrics
+  if (customQuizError) {
+    return (
+      <div className="page-container">
+        <p className="form-error" role="alert">{customQuizError}</p>
+        <Link className="btn btn-primary" to="/categories">Back to Quizzes</Link>
+      </div>
+    );
+  }
+
+  if (!isReady) return <div className="page-container database-status">Loading quiz from Supabase…</div>;
+
   const answeredCount = Object.keys(userAnswers).length;
   const progressPercent = Math.round(((currentIndex + 1) / questions.length) * 100);
 
   return (
     <div className="page-container quiz-page">
-      {/* Top Banner with Quiz Title & Timer */}
       <div className="quiz-header-bar">
         <div className="quiz-title-info">
-          <span className="quiz-category-pill">
-            {currentCategory.icon} {currentCategory.name}
-          </span>
-          <span className="quiz-progress-text">
-            Answered {answeredCount} of {questions.length}
-          </span>
+          <span className="quiz-category-pill">{currentCategory.icon} {currentCategory.name}</span>
+          <span className="quiz-progress-text">Answered {answeredCount} of {questions.length}</span>
         </div>
-
         <Timer timeLeft={timeLeft} totalTime={totalTimeSeconds} />
       </div>
 
-      {/* Progress Bar */}
       <div className="progress-container">
         <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }} />
       </div>
 
-      {/* Main Quiz Card */}
       <main className="quiz-main-content">
         <QuizCard
           questionData={questions[currentIndex]}
@@ -127,23 +179,27 @@ const Quiz = () => {
           onSelectOption={handleSelectOption}
         />
 
-        {/* Bottom Controls: Previous, Clear, Next/Submit */}
+        {submissionError && (
+          <div className="form-error submission-error" role="alert">
+            <span>{submissionError}</span>
+            <button type="button" className="btn btn-primary" onClick={handleSubmitQuiz}>
+              Save &amp; Submit
+            </button>
+          </div>
+        )}
+
         <div className="quiz-controls">
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={handlePrev}
-            disabled={currentIndex === 0}
+            onClick={() => setCurrentIndex((index) => index - 1)}
+            disabled={currentIndex === 0 || isSubmitting}
           >
             ← Previous
           </button>
 
           {userAnswers[currentIndex] !== undefined && (
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={handleClearAnswer}
-            >
+            <button type="button" className="btn btn-ghost" onClick={handleClearAnswer} disabled={isSubmitting}>
               Clear Choice
             </button>
           )}
@@ -152,37 +208,39 @@ const Quiz = () => {
             <button
               type="button"
               className="btn btn-primary"
-              onClick={handleNext}
+              onClick={() => setCurrentIndex((index) => index + 1)}
+              disabled={isSubmitting}
             >
-              Next →
+              {userAnswers[currentIndex] !== undefined ? 'Save Answer & Next →' : 'Next →'}
             </button>
           ) : (
             <button
               type="button"
               className="btn btn-submit"
               onClick={() => setShowConfirmModal(true)}
+              disabled={isSubmitting}
             >
-              Finish & Submit Quiz ✓
+              {isSubmitting ? 'Saving…' : 'Finish & Submit Quiz ✓'}
             </button>
           )}
         </div>
 
-        {/* Question Palette / Navigator */}
         <div className="question-palette">
           <span className="palette-title">Question Navigator:</span>
           <div className="palette-grid">
-            {questions.map((_, idx) => {
-              const isAnswered = userAnswers[idx] !== undefined;
-              const isCurrent = idx === currentIndex;
+            {questions.map((_, index) => {
+              const isAnswered = userAnswers[index] !== undefined;
+              const isCurrent = index === currentIndex;
               return (
                 <button
-                  key={idx}
+                  key={index}
                   type="button"
                   className={`palette-num ${isCurrent ? 'current' : ''} ${isAnswered ? 'answered' : ''}`}
-                  onClick={() => setCurrentIndex(idx)}
-                  title={`Go to Question ${idx + 1}`}
+                  onClick={() => setCurrentIndex(index)}
+                  disabled={isSubmitting}
+                  title={`Go to Question ${index + 1}`}
                 >
-                  {idx + 1}
+                  {index + 1}
                 </button>
               );
             })}
@@ -190,33 +248,28 @@ const Quiz = () => {
         </div>
       </main>
 
-      {/* Confirmation Modal */}
       {showConfirmModal && (
         <div className="modal-backdrop">
           <div className="modal-card">
             <h3>Submit Quiz Confirmation</h3>
-            <p>
-              You have answered <strong>{answeredCount}</strong> out of <strong>{questions.length}</strong> questions.
-            </p>
+            <p>You have answered <strong>{answeredCount}</strong> out of <strong>{questions.length}</strong> questions.</p>
             {answeredCount < questions.length && (
               <p className="modal-warning">
                 ⚠️ You have {questions.length - answeredCount} unanswered question(s). Are you sure you want to finish now?
               </p>
             )}
+            {submissionError && <p className="form-error" role="alert">{submissionError}</p>}
             <div className="modal-actions">
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={() => setShowConfirmModal(false)}
+                disabled={isSubmitting}
               >
                 Keep Answering
               </button>
-              <button
-                type="button"
-                className="btn btn-submit"
-                onClick={handleSubmitQuiz}
-              >
-                Yes, Submit Now
+              <button type="button" className="btn btn-submit" onClick={handleSubmitQuiz} disabled={isSubmitting}>
+                {isSubmitting ? 'Saving…' : 'Yes, Submit Now'}
               </button>
             </div>
           </div>

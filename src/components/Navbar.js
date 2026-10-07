@@ -1,8 +1,10 @@
-import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
-const Navbar = () => {
+const Navbar = ({ isTeacher, onSignOut }) => {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [signOutError, setSignOutError] = useState('');
 
   const isActive = (path) => {
     return location.pathname === path ? 'nav-link active' : 'nav-link';
@@ -27,8 +29,35 @@ const Navbar = () => {
           <Link to="/leaderboard" className={isActive('/leaderboard')}>
             🏆 Leaderboard
           </Link>
+          {isTeacher ? (
+            <>
+              <Link to="/teacher/quizzes" className={isActive('/teacher/quizzes')}>
+                ✎ Manage Quizzes
+              </Link>
+              <button
+                type="button"
+                className="nav-link nav-button"
+                onClick={async () => {
+                  setSignOutError('');
+                  try {
+                    await onSignOut();
+                    navigate('/login');
+                  } catch (error) {
+                    setSignOutError(error.message);
+                  }
+                }}
+              >
+                Sign Out
+              </button>
+            </>
+          ) : (
+            <Link to="/login" className={isActive('/login')}>
+              👤 Student / Teacher Login
+            </Link>
+          )}
         </nav>
       </div>
+      {signOutError && <p className="form-error nav-error" role="alert">{signOutError}</p>}
     </header>
   );
 };

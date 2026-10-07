@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
+import { saveAttemptStudentName } from '../lib/supabase';
 
 const Result = () => {
   const location = useLocation();
@@ -10,6 +11,8 @@ const Result = () => {
   const [studentName, setStudentName] = useState('');
   const [isSaved, setIsSaved] = useState(false);
   const [showExplanation, setShowExplanation] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   // If page accessed directly without quiz state, provide fallback redirect
   if (!state || !state.questions) {
@@ -30,6 +33,8 @@ const Result = () => {
     categoryId,
     categoryName,
     categoryIcon,
+    quizId,
+    attemptId,
     questions,
     userAnswers,
     timeSpent
@@ -60,32 +65,19 @@ const Result = () => {
   const formattedTimeSpent = `${minutesSpent}m ${secondsSpent}s`;
 
   // Save to Leaderboard
-  const handleSaveToLeaderboard = (e) => {
+  const handleSaveToLeaderboard = async (e) => {
     e.preventDefault();
-    if (!studentName.trim()) return;
-
-    const existingScores = JSON.parse(localStorage.getItem('quiz_leaderboard') || '[]');
-
-    const newEntry = {
-      id: Date.now(),
-      name: studentName.trim(),
-      category: categoryName,
-      categoryIcon: categoryIcon || '🎯',
-      score: correctCount,
-      total: totalQuestions,
-      percentage: percentage,
-      status: isPass ? 'PASS' : 'FAIL',
-      timeSpent: formattedTimeSpent,
-      date: new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric'
-      })
-    };
-
-    const updatedScores = [newEntry, ...existingScores];
-    localStorage.setItem('quiz_leaderboard', JSON.stringify(updatedScores));
-    setIsSaved(true);
+    if (!studentName.trim() || !attemptId || isSaving) return;
+    setIsSaving(true);
+    setSaveError('');
+    try {
+      await saveAttemptStudentName(attemptId, studentName.trim());
+      setIsSaved(true);
+    } catch (error) {
+      setSaveError(`Could not save your name to Supabase: ${error.message}`);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -141,7 +133,7 @@ const Result = () => {
           {!isSaved ? (
             <form onSubmit={handleSaveToLeaderboard} className="save-form">
               <label htmlFor="student-name" className="form-label">
-                Enter your name to save your score to the Leaderboard:
+                Enter your name to add your saved score to the Leaderboard:
               </label>
               <div className="input-row">
                 <input
@@ -151,12 +143,14 @@ const Result = () => {
                   value={studentName}
                   onChange={(e) => setStudentName(e.target.value)}
                   className="input-text"
+                  maxLength={120}
                   required
                 />
-                <button type="submit" className="btn btn-save">
-                  Save Score 💾
+                <button type="submit" className="btn btn-save" disabled={isSaving}>
+                  {isSaving ? 'Saving…' : 'Save Name 💾'}
                 </button>
               </div>
+              {saveError && <p className="form-error" role="alert">{saveError}</p>}
             </form>
           ) : (
             <div className="save-success">
@@ -177,7 +171,7 @@ const Result = () => {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => navigate(`/quiz/${categoryId}`)}
+            onClick={() => navigate(quizId ? `/quiz/custom/${quizId}` : `/quiz/${categoryId}`)}
           >
             🔄 Retake Quiz
           </button>
